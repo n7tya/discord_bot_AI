@@ -22,8 +22,9 @@ class MemoryCog(commands.Cog):
             await self._export_memory(interaction, user_id)
     
     async def _show_memory(self, interaction: discord.Interaction, user_id: str):
-        """会話履歴を表示"""
-        conversations = self.memory.get_context(user_id)
+        """会話履歴を表示（サーバー別）"""
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        conversations = self.memory.get_context(user_id, guild_id)
         
         if not conversations:
             embed = discord.Embed(
@@ -37,29 +38,35 @@ class MemoryCog(commands.Cog):
         # 最新の5件を表示
         recent_conversations = conversations[-5:]
         
+        server_name = interaction.guild.name if interaction.guild else "DM"
         embed = discord.Embed(
             title="🧠 記憶",
-            description=f"最新の{len(recent_conversations)}件の会話履歴（全{len(conversations)}件）",
+            description=f"**サーバー**: {server_name}\n"
+                       f"最新の{len(recent_conversations)}件の会話履歴（全{len(conversations)}件）",
             color=discord.Color.blue()
         )
         
         for i, conv in enumerate(recent_conversations, 1):
             timestamp = conv.get('timestamp', '不明')
-            user_msg = conv.get('user', '')[:100] + ('...' if len(conv.get('user', '')) > 100 else '')
-            ai_msg = conv.get('assistant', '')[:100] + ('...' if len(conv.get('assistant', '')) > 100 else '')
+            msg_type = conv.get('type', 'command')
+            type_emoji = "💬" if msg_type == "command" else "🤖"
+            
+            user_msg = conv.get('user', '')[:80] + ('...' if len(conv.get('user', '')) > 80 else '')
+            ai_msg = conv.get('assistant', '')[:80] + ('...' if len(conv.get('assistant', '')) > 80 else '')
             
             embed.add_field(
-                name=f"💬 会話 {i}",
+                name=f"{type_emoji} 会話 {i} ({msg_type})",
                 value=f"**時刻**: {timestamp}\n**あなた**: {user_msg}\n**AI**: {ai_msg}",
                 inline=False
             )
         
-        embed.set_footer(text=f"ユーザーID: {user_id}")
+        embed.set_footer(text=f"ユーザーID: {user_id} | サーバー別履歴")
         await interaction.response.send_message(embed=embed, ephemeral=True)
     
     async def _clear_memory(self, interaction: discord.Interaction, user_id: str):
-        """会話履歴をクリア"""
-        conversations = self.memory.get_context(user_id)
+        """会話履歴をクリア（サーバー別）"""
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        conversations = self.memory.get_context(user_id, guild_id)
         
         if not conversations:
             embed = discord.Embed(
@@ -70,26 +77,29 @@ class MemoryCog(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        server_name = interaction.guild.name if interaction.guild else "DM"
         # 確認メッセージを表示
         embed = discord.Embed(
             title="🧠 記憶クリア",
-            description=f"本当に{len(conversations)}件の会話履歴をクリアしますか？",
+            description=f"**サーバー**: {server_name}\n"
+                       f"本当に{len(conversations)}件の会話履歴をクリアしますか？",
             color=discord.Color.red()
         )
         
         class ConfirmView(discord.ui.View):
-            def __init__(self, memory_manager, user_id):
+            def __init__(self, memory_manager, user_id, guild_id):
                 super().__init__(timeout=30)
                 self.memory_manager = memory_manager
                 self.user_id = user_id
+                self.guild_id = guild_id
                 
             @discord.ui.button(label="はい", style=discord.ButtonStyle.danger)
             async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-                self.memory_manager.clear_memory(self.user_id)
+                self.memory_manager.clear_memory(self.user_id, self.guild_id)
                 
                 embed = discord.Embed(
                     title="🧠 記憶クリア完了",
-                    description="会話履歴をクリアしました。",
+                    description=f"**{server_name}** の会話履歴をクリアしました。",
                     color=discord.Color.green()
                 )
                 await interaction.response.edit_message(embed=embed, view=None)
@@ -103,12 +113,13 @@ class MemoryCog(commands.Cog):
                 )
                 await interaction.response.edit_message(embed=embed, view=None)
         
-        view = ConfirmView(self.memory, user_id)
+        view = ConfirmView(self.memory, user_id, guild_id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     
     async def _export_memory(self, interaction: discord.Interaction, user_id: str):
-        """会話履歴をエクスポート"""
-        export_text = self.memory.export_memory(user_id)
+        """会話履歴をエクスポート（サーバー別）"""
+        guild_id = str(interaction.guild.id) if interaction.guild else None
+        export_text = self.memory.export_memory(user_id, guild_id)
         
         if export_text == "会話履歴がありません。":
             embed = discord.Embed(
@@ -127,12 +138,14 @@ class MemoryCog(commands.Cog):
         buffer.write(export_text.encode('utf-8'))
         buffer.seek(0)
         
-        filename = f"conversation_history_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        server_suffix = f"_guild{guild_id}" if guild_id else "_dm"
+        filename = f"conversation_history_{user_id}{server_suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         file = discord.File(buffer, filename=filename)
         
+        server_name = interaction.guild.name if interaction.guild else "DM"
         embed = discord.Embed(
             title="🧠 記憶エクスポート",
-            description="会話履歴をエクスポートしました。",
+            description=f"**{server_name}** の会話履歴をエクスポートしました。",
             color=discord.Color.green()
         )
         

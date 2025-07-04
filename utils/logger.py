@@ -3,8 +3,12 @@ import os
 from datetime import datetime
 from config import Config
 
+
 class BotLogger:
+    """Discord Bot用ロガークラス"""
+    
     def __init__(self):
+        """ロガーの初期化"""
         self.logger = logging.getLogger('discord_bot')
         self.setup_logger()
     
@@ -68,6 +72,7 @@ class BotLogger:
         import traceback
         error_msg = f"Error in {context}: {str(error)}\n{traceback.format_exc()}"
         self.error(error_msg)
+
 
 # グローバルロガーインスタンス
 bot_logger = BotLogger()

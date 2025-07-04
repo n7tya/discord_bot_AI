@@ -17,9 +17,10 @@ class AIChatCog(commands.Cog):
         await interaction.response.defer(thinking=True)
         
         try:
-            # ユーザーの会話履歴を取得
+            # ユーザーの会話履歴を取得（サーバー別）
             user_id = str(interaction.user.id)
-            context = self.memory.get_context(user_id)
+            guild_id = str(interaction.guild.id) if interaction.guild else None
+            context = self.memory.get_context(user_id, guild_id)
             
             # AI応答生成（時間測定）
             import time
@@ -27,8 +28,15 @@ class AIChatCog(commands.Cog):
             response = await self.ai.generate_response(message, context)
             generation_time = time.time() - start_time
             
-            # 会話履歴を更新
-            self.memory.add_conversation(user_id, message, response)
+            # 会話履歴を更新（サーバー別、コマンドとして）
+            self.memory.add_conversation(
+                user_id=user_id,
+                user_message=message,
+                ai_response=response,
+                guild_id=guild_id,
+                channel_id=str(interaction.channel.id),
+                message_type="command"
+            )
             
             # 応答の品質チェック
             if not response or len(response.strip()) < 5:

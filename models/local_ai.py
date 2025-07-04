@@ -1,230 +1,275 @@
+"""
+ローカルAIモデル - 日本語会話AI
+
+安全で軽量な日本語会話AIの実装
+"""
+
+import asyncio
 import json
 import os
-from datetime import datetime
-import asyncio
 import random
+from datetime import datetime
+from typing import List, Dict, Optional
 
 # PyTorchとTransformersのインポートを安全に行う
 try:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     TORCH_AVAILABLE = True
-except ImportError as e:
-    print(f"PyTorch/Transformersのインポートエラー: {e}")
+except ImportError:
     TORCH_AVAILABLE = False
 
+
 class LocalAI:
+    """ローカル日本語AIモデル"""
+    
     def __init__(self):
-        # より軽量な日本語モデルを使用
-        self.model_name = "rinna/japanese-gpt2-medium"
-        
-        if TORCH_AVAILABLE:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        else:
-            self.device = None
-        
-        # 実際のAIモデルを有効化（PyTorchが利用できる場合）
-        self.use_real_model = TORCH_AVAILABLE
-        
-        try:
-            if self.use_real_model and TORCH_AVAILABLE:
-                # モデルとトークナイザーの初期化
-                print(f"日本語モデル {self.model_name} をロード中...")
-                
-                # トークナイザーのロード
-                self.tokenizer = AutoTokenizer.from_pretrained(
-                    self.model_name,
-                    use_fast=True
-                )
-                
-                # pad_tokenの設定
-                if self.tokenizer.pad_token is None:
-                    self.tokenizer.pad_token = self.tokenizer.eos_token
-                
-                # モデルのロード（メモリ最適化）
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_name,
-                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                    device_map="auto" if torch.cuda.is_available() else None,
-                    low_cpu_mem_usage=True,
-                    trust_remote_code=True
-                )
-                
-                # モデルをデバイスに移動
-                if not torch.cuda.is_available():
-                    self.model = self.model.to(self.device)
-                
-                # 評価モードに設定
-                self.model.eval()
-                
-                print("✅ 日本語モデルのロードが完了しました")
-                print(f"   デバイス: {self.device}")
-                print(f"   モデルサイズ: {sum(p.numel() for p in self.model.parameters())/1e6:.1f}M parameters")
-                
-            else:
-                # ダミーモデル
-                if not TORCH_AVAILABLE:
-                    print("❌ PyTorchが利用できません。ダミーAIを使用します")
-                else:
-                    print("🔧 デバッグモード: ダミーAIを使用します")
-                self.tokenizer = None
-                self.model = None
-                
-        except Exception as e:
-            print(f"❌ モデルロードエラー: {e}")
-            print("🔄 フォールバック: ダミーモードに切り替えます")
-            self.use_real_model = False
-            self.tokenizer = None
-            self.model = None
+        """AIモデルの初期化"""
+        from config import Config
+        self.model_name = Config.AI_MODEL_NAME
+        self.device = None
+        self.tokenizer = None
+        self.model = None
+        self.use_real_model = False
         
         # 学習データのパス
         self.training_data_path = "data/conversations/training_data.json"
         
-    async def generate_response(self, message: str, context: list) -> str:
-        # 非同期でCPU集約的なタスクを実行
-        return await asyncio.to_thread(self._generate_sync, message, context)
-        
-    def _generate_sync(self, message: str, context: list) -> str:
-        if not self.use_real_model:
-            # デバッグ用のダミー応答
-            dummy_responses = [
-                f"こんにちは！「{message}」について考えてみますね。",
-                f"なるほど、「{message}」ですね。興味深いお話です。",
-                f"「{message}」について、私なりに回答させていただきます。",
-                f"ご質問の「{message}」に関して、お答えします。",
-                f"「{message}」について、一緒に考えてみましょう。"
-            ]
-            
-            # コンテキストを考慮したより自然な応答
-            if context:
-                last_conv = context[-1] if context else None
-                if last_conv:
-                    dummy_responses.append(f"先ほどの「{last_conv.get('user', '')}」の件も含めて、「{message}」について回答しますね。")
-            
-            return random.choice(dummy_responses)
-        
-        # 実際のモデルを使用する場合
+        # モデルの初期化を試行
+        self._initialize_model()
+
+    def _initialize_model(self):
+        """モデルの初期化処理"""
         if not TORCH_AVAILABLE:
-            return f"PyTorchが利用できないため、「{message}」にダミー応答でお答えします。"
-            
+            print("❌ PyTorchが利用できません。ダミーAIを使用します")
+            return
+
         try:
-            # コンテキストを含むプロンプトを作成
-            prompt = self._build_prompt(message, context)
+            # Mac Apple Silicon (M1/M2)の場合はMPS、それ以外はCPU
+            from config import Config
+            if torch.backends.mps.is_available() and Config.AI_USE_MPS:
+                self.device = torch.device("mps")
+                print("🍎 Apple Silicon (MPS) を使用します")
+            elif torch.cuda.is_available():
+                self.device = torch.device("cuda")
+                print("🚀 CUDA GPU を使用します")
+            else:
+                self.device = torch.device("cpu")
+                print("💻 CPU を使用します")
+                
+            print(f"日本語モデル {self.model_name} をロード中...")
             
-            # トークナイズ（最大長制限）
-            inputs = self.tokenizer(
-                prompt, 
-                return_tensors="pt", 
-                max_length=512, 
-                truncation=True
-            ).to(self.device)
+            # トークナイザーのロード
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                use_fast=True
+            )
             
-            # 生成パラメータ（日本語会話最適化）
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    inputs.input_ids,
-                    max_new_tokens=100,  # より短く、応答性を向上
-                    min_new_tokens=10,   # 最低限の長さを保証
-                    temperature=0.8,     # 適度な創造性
-                    do_sample=True,
-                    top_p=0.85,          # 自然な応答のバランス
-                    top_k=40,            # 語彙の多様性制御
-                    repetition_penalty=1.15,  # 繰り返し抑制強化
-                    no_repeat_ngram_size=2,   # n-gram繰り返し防止
-                    pad_token_id=self.tokenizer.pad_token_id,
-                    eos_token_id=self.tokenizer.eos_token_id,
-                    early_stopping=True
-                )
+            if self.tokenizer.pad_token is None:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
             
-            # デコードと後処理
-            response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-            response = response.replace(prompt, "").strip()
+            # モデルのロード（Apple Silicon最適化）
+            model_kwargs = {
+                "low_cpu_mem_usage": True,
+                "use_cache": True
+            }
             
-            # レスポンスのクリーニング
-            response = self._clean_response(response)
+            # Apple Silicon (MPS)の場合の最適化
+            if self.device.type == "mps":
+                model_kwargs["torch_dtype"] = torch.float32  # MPSはfloat16をサポートしない場合があるため
+            elif self.device.type == "cuda":
+                model_kwargs["torch_dtype"] = torch.float16
+            else:
+                model_kwargs["torch_dtype"] = torch.float32
             
-            return response if response else "すみません、うまく応答を生成できませんでした。"
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                **model_kwargs
+            )
+            
+            # モデルをデバイスに移動
+            self.model = self.model.to(self.device)
+            self.model.eval()
+            self.use_real_model = True
+            
+            print("✅ 日本語モデルのロードが完了しました")
+            print(f"   デバイス: {self.device}")
+            print(f"   メモリ使用量: {torch.cuda.memory_allocated() / 1024**2:.1f}MB" if self.device.type == "cuda" else "")
             
         except Exception as e:
+            print(f"❌ モデルロードエラー: {e}")
+            print("🔄 ダミーモードに切り替えます")
+            self._reset_to_dummy_mode()
+    def _reset_to_dummy_mode(self):
+        """ダミーモードにリセット"""
+        self.use_real_model = False
+        self.tokenizer = None
+        self.model = None
+
+    async def generate_response(self, message: str, context: List[Dict]) -> str:
+        """メッセージに対する応答を生成"""
+        return await asyncio.to_thread(self._generate_sync, message, context)
+        
+    def _generate_sync(self, message: str, context: List[Dict]) -> str:
+        """同期的な応答生成"""
+        # 入力の検証
+        if not message or len(message.strip()) == 0:
+            return "何かメッセージをお聞かせください。"
+        
+        # 長すぎるメッセージの制限
+        if len(message) > 500:
+            return "メッセージが長すぎます。もう少し短くしてください。"
+        
+        # ダミーモードの場合
+        if not self.use_real_model:
+            return self._generate_dummy_response(message, context)
+        
+        # 実際のAIモデルでの生成
+        try:
+            return self._generate_real_response(message, context)
+        except Exception as e:
             print(f"AI生成エラー: {e}")
-            # エラー時もより自然なフォールバック
-            fallback_responses = [
-                f"「{message}」について考えてみますが、今は少し調子が悪いようです。",
-                f"申し訳ありません。「{message}」に関して、今すぐお答えできません。",
-                f"「{message}」についてお聞きいただきありがとうございます。少し時間をください。"
-            ]
-            return random.choice(fallback_responses)
+            return self._generate_dummy_response(message, context)
+
+    def _generate_dummy_response(self, message: str, context: List[Dict]) -> str:
+        """ダミー応答の生成"""
+        responses = [
+            f"「{message}」について考えてみますね。",
+            f"なるほど、「{message}」ですね。",
+            f"「{message}」に関してお答えします。",
+            f"「{message}」について一緒に考えてみましょう。"
+        ]
         
-    def _build_prompt(self, message: str, context: list) -> str:
-        # 日本語会話に最適化されたプロンプト
-        prompt = "あなたは親切で知識豊富な日本語AIアシスタントです。自然で親しみやすい会話を心がけてください。\n\n"
+        # コンテキストを考慮
+        if context and len(context) > 0:
+            last_conv = context[-1]
+            if 'user' in last_conv:
+                responses.append(f"先ほどの話も踏まえて、「{message}」についてお答えしますね。")
         
-        # 最新の3つの会話を含める（メモリ効率化）
-        recent_context = context[-3:] if context else []
-        for conv in recent_context:
-            prompt += f"ユーザー: {conv['user']}\n"
-            prompt += f"アシスタント: {conv['assistant']}\n"
-            
-        prompt += f"ユーザー: {message}\nアシスタント: "
+        return random.choice(responses)
+
+    def _generate_real_response(self, message: str, context: List[Dict]) -> str:
+        """実際のAIモデルでの応答生成"""
+        # プロンプトの作成
+        prompt = self._build_prompt(message, context)
         
+        # トークナイズ
+        inputs = self.tokenizer(
+            prompt, 
+            return_tensors="pt", 
+            max_length=400,  # より短い制限で安全性向上
+            truncation=True
+        ).to(self.device)
+        
+        # より安全で制御された生成パラメータ（設定ファイルから読み込み）
+        from config import Config
+        with torch.no_grad():
+            outputs = self.model.generate(
+                inputs.input_ids,
+                max_new_tokens=Config.AI_MAX_TOKENS,     # 設定ファイルから読み込み
+                min_new_tokens=5,                        # 最低限の長さ
+                temperature=Config.AI_TEMPERATURE,       # 設定ファイルから読み込み
+                do_sample=True,
+                top_p=0.8,               # より制限的
+                top_k=20,                # 語彙を制限
+                repetition_penalty=1.2,   # 繰り返し強く抑制
+                no_repeat_ngram_size=3,   # より長いn-gramの繰り返し防止
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                bad_words_ids=[[self.tokenizer.unk_token_id]] if hasattr(self.tokenizer, 'unk_token_id') else None
+            )
+        
+        # デコードと後処理
+        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        response = response.replace(prompt, "").strip()
+        
+        # 応答のクリーニング
+        response = self._clean_response(response)
+        
+        return response if response else "申し訳ございません。うまく応答できませんでした。"
+    def _build_prompt(self, message: str, context: List[Dict]) -> str:
+        """対話プロンプトの構築（改善版）"""
+        # より制御しやすいシンプルなプロンプト
+        prompt = ""
+        
+        # コンテキストは最新の1つのみ（混乱を避ける）
+        if context and len(context) > 0:
+            last_conv = context[-1]
+            if 'user' in last_conv and 'assistant' in last_conv:
+                prompt += f"前回: {last_conv['user']} → {last_conv['assistant']}\n"
+        
+        prompt += f"質問: {message}\n回答:"
         return prompt
     
     def _clean_response(self, response: str) -> str:
-        """応答のクリーニングと後処理"""
+        """応答のクリーニング（強化版）"""
         if not response:
             return ""
         
-        # 不要な改行や空白を除去
+        # 基本的なクリーニング
         response = response.strip()
         
-        # 文の途中で切れている場合の処理
-        sentences = response.split('。')
-        if len(sentences) > 1 and sentences[-1].strip() and not sentences[-1].endswith(('！', '？', '♪')):
-            # 最後の不完全な文を除去
-            response = '。'.join(sentences[:-1]) + '。'
+        # 改行を除去
+        response = response.replace('\n', ' ')
         
-        # 短すぎる応答の除外
-        if len(response.replace(' ', '').replace('\n', '')) < 5:
+        # 連続する空白を単一の空白に
+        import re
+        response = re.sub(r'\s+', ' ', response)
+        
+        # 短すぎる場合は除外
+        if len(response) < 3:
             return ""
         
-        # 重複フレーズの除去
-        lines = response.split('\n')
-        unique_lines = []
-        for line in lines:
-            if line.strip() and line.strip() not in unique_lines:
-                unique_lines.append(line.strip())
+        # 長すぎる場合は最初の文のみ
+        sentences = response.split('。')
+        if len(sentences) > 0 and sentences[0].strip():
+            response = sentences[0].strip()
+            # 文の終わりに句点を追加（ない場合）
+            if not response.endswith(('。', '！', '？')):
+                response += '。'
         
-        return '\n'.join(unique_lines) if unique_lines else response
+        # 異常なパターンを検出して除外
+        if any(pattern in response.lower() for pattern in [
+            'http', 'www.', 'chatroom', 'website', 'translation', 
+            'contact me', 'support', 'blog', 'english'
+        ]):
+            return ""
+        
+        # 100文字を超える場合は切り詰め
+        if len(response) > 100:
+            response = response[:100] + "..."
+        
+        return response
         
     async def update_learning_data(self, user_id: str, message: str, response: str):
-        # 学習データに追加
-        data = {
-            "user_id": user_id,
-            "timestamp": datetime.now().isoformat(),
-            "message": message,
-            "response": response
-        }
-        
-        # 既存のデータを読み込み
-        if os.path.exists(self.training_data_path):
-            with open(self.training_data_path, 'r', encoding='utf-8') as f:
-                training_data = json.load(f)
-        else:
+        """学習データの更新（簡略版）"""
+        try:
+            # データの保存（シンプル版）
+            data = {
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "message": message[:100],  # 長さ制限
+                "response": response[:200]  # 長さ制限
+            }
+            
+            os.makedirs(os.path.dirname(self.training_data_path), exist_ok=True)
+            
+            # 既存データの読み込み
             training_data = []
+            if os.path.exists(self.training_data_path):
+                with open(self.training_data_path, 'r', encoding='utf-8') as f:
+                    training_data = json.load(f)
             
-        training_data.append(data)
-        
-        # データを保存
-        os.makedirs(os.path.dirname(self.training_data_path), exist_ok=True)
-        with open(self.training_data_path, 'w', encoding='utf-8') as f:
-            json.dump(training_data, f, ensure_ascii=False, indent=2)
+            # 新しいデータを追加
+            training_data.append(data)
             
-        # 一定量のデータが溜まったら自動的にファインチューニング
-        if len(training_data) % 100 == 0:
-            asyncio.create_task(self._fine_tune_model())
+            # 最新の1000件のみ保持
+            if len(training_data) > 1000:
+                training_data = training_data[-1000:]
             
-    async def _fine_tune_model(self):
-        # ファインチューニングの実装（簡略版）
-        print("モデルのファインチューニングを開始します...")
-        # 実際の実装では、LoRAやQLoRAなどの効率的な手法を使用
-        pass
+            # データを保存
+            with open(self.training_data_path, 'w', encoding='utf-8') as f:
+                json.dump(training_data, f, ensure_ascii=False, indent=2)
+                
+        except Exception as e:
+            print(f"学習データ保存エラー: {e}")

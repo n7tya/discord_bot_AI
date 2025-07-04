@@ -74,6 +74,20 @@ export KMP_DUPLICATE_LIB_OK=TRUE && python main.py
 
 ## トラブルシューティング
 
+### 🚨 「不明な連携」エラー（重要）
+
+ボットが「不明な連携」と表示される場合：
+
+1. **原因**: ボットが `applications.commands` スコープなしで招待されている
+2. **解決方法**: 
+   ```bash
+   python generate_invite_url.py
+   ```
+3. **手順**:
+   - 古いボットをサーバーから削除
+   - 生成された新しいURLで再招待
+   - 詳細は `DISCORD_SETUP.md` を参照
+
 ### よくある問題
 
 1. **OpenMP競合エラー**
@@ -87,6 +101,10 @@ export KMP_DUPLICATE_LIB_OK=TRUE && python main.py
 
 3. **Discord Token エラー**
    - `.env`ファイルのDISCORD_TOKENが正しく設定されているか確認
+
+4. **スラッシュコマンドが表示されない**
+   - GUILD_IDが正しく設定されているか確認
+   - ボットが正しいスコープで招待されているか確認
 
 ## AIモデルについて
 
